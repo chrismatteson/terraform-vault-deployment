@@ -25,3 +25,11 @@ output "security_group_id" {
 output "vault_load_balancer" {
   value = aws_lb.vault.dns_name
 }
+
+output "vault_load_balancer_zone"{
+  value = aws_lb.vault.zone_id
+}
+
+output "setup_bucket" {
+  value = aws_s3_bucket.vault_setup.bucket
+}

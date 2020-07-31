@@ -20,7 +20,7 @@ variable "vault_version" {
   default = "1.5.0"
 }
 variable "vault_download_url" { default = "" }
-variable "cluster_tag_key" { default = "consul-servers" }
+variable "cluster_tag_key" { default = "AutoJoinKey" }
 variable "cluster_tag_value" { default = "auto-join" }
 variable "vault_path" { default = "" }
 variable "vault_user" { default = "" }

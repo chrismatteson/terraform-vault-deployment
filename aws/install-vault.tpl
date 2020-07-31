@@ -18,6 +18,8 @@ readonly VAULT_VERSION=%{ if vault_version != "" }${vault_version}%{ endif }
 readonly VAULT_DOWNLOAD_URL=%{ if vault_download_url != "" }${vault_download_url}%{ endif }
 readonly KMS_KEY=${kms_key}
 readonly API_ADDR=${api_addr}
+readonly CLUSTER_TAG_KEY=${cluster_tag_key}
+readonly CLUSTER_TAG_VALUE=${cluster_tag_value}
 
 function log {
   local -r level="$1"
@@ -211,6 +213,15 @@ function get_instance_region {
   lookup_path_in_instance_dynamic_data "instance-identity/document" | jq -r ".region"
 }
 
+function get_peers {
+  local -r cluster_tag_key="$1"
+  local -r cluster_tag_value="$2"
+  local -r instance_region="$3"
+  local nodes=""
+  nodes=$(aws ec2 describe-instances --region $instance_region --filters Name=tag:$cluster_tag_key,Values=$cluster_tag_value Name=instance-state-name,Values=pending,running | jq --raw-output '[.Reservations[].Instances[].PrivateDnsName] | .[]')
+  echo $nodes
+}
+
 function get_instance_tags {
   local -r instance_id="$1"
   local -r instance_region="$2"
@@ -270,6 +281,8 @@ function generate_vault_config {
   local -r user="$2"
   local -r kms_key="$3"
   local -r api_addr="$4"
+  local -r cluster_tag_key="$5"
+  local -r cluster_tag_value="$6"
   local -r region=$(get_instance_region)
   local -r config_path="$vault_dir/config/$VAULT_CONFIG_FILE"
 
@@ -281,14 +294,16 @@ function generate_vault_config {
   instance_ip_address=$(get_instance_ip_address)
   instance_region=$(get_instance_region)
 
-  local retry_join_json=""
+  local retry_join_block=""
+  local nodes=[]
   if [[ -z "$cluster_tag_key" || -z "$cluster_tag_value" ]]; then
     log_warn "Either the cluster tag key ($cluster_tag_key) or value ($cluster_tag_value) is empty. Will not automatically try to form a cluster based on EC2 tags."
   else
-    retry_join_json=$(cat <<EOF
-"retry_join": ["provider=aws region=$instance_region tag_key=$cluster_tag_key tag_value=$cluster_tag_value"],
-EOF
-)
+    nodes=$(get_peers $cluster_tag_key $cluster_tag_value $region)
+    for node in $nodes; do
+      retry_join_block="$retry_join_block
+  retry_join = {leader_api_addr = \"http://$node:8200\"}"
+    done;
   fi
 
 
@@ -300,8 +315,9 @@ listener "tcp" {
   tls_disable_client_certs = "true"
 }
 storage "raft" {
+  node_id = "$instance_id"
   path = "$vault_dir/data"
-  retry_join = retry_join_json
+  $retry_join_block
 }
 seal "awskms" {
   region     = "$region"
@@ -416,7 +432,9 @@ function main {
   generate_vault_config "$VAULT_PATH" \
     "$VAULT_USER" \
     "$KMS_KEY" \
-    "$API_ADDR"
+    "$API_ADDR" \
+    "$CLUSTER_TAG_KEY" \
+    "$CLUSTER_TAG_VALUE"
 
   generate_systemd_config "vault" \
     "$SYSTEMD_CONFIG_PATH" \

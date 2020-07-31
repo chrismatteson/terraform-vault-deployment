@@ -314,14 +314,23 @@ module "vault" {
   key_name            = var.ssh_key_name
   enabled_metrics      = ["GroupTotalInstances"]
   iam_instance_profile = aws_iam_instance_profile.instance_profile.name
-  tags = [
-    for k, v in local.tags :
-    {
-      key : k
-      value : v
-      propagate_at_launch : true
-    }
-  ]
+  tags = concat(
+    [
+      for k, v in local.tags :
+      {
+        key : k
+        value : v
+        propagate_at_launch : true
+      }
+    ],
+    [
+      {
+        key                 = var.cluster_tag_key
+        value               = "${random_id.cluster_name.hex}-${var.cluster_tag_value}"
+        propagate_at_launch = true
+      }
+    ]
+  )
   user_data = data.template_cloudinit_config.vault.rendered
 }
 
