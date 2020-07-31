@@ -56,13 +56,9 @@ module "bastion_vpc" {
     Name = "${random_id.deployment_tag.hex}-vpc"
     Purpose = "bastion"
   }
-  providers = {
-    aws = aws.region1
-  }
 }
 
 resource "aws_default_security_group" "bastion_default" {
-  provider = aws.region1
   vpc_id   = module.bastion_vpc.vpc_id
 
   ingress {
@@ -81,14 +77,12 @@ resource "aws_default_security_group" "bastion_default" {
 }
 
 resource "aws_key_pair" "key" {
-  provider   = aws.region1
   key_name   = "${random_id.deployment_tag.hex}-key"
   public_key = tls_private_key.ssh.public_key_openssh
 }
 
 # Lookup most recent AMI
 data "aws_ami" "latest-image" {
-  provider    = aws.region1
   most_recent = true
   owners      = ["099720109477"]
 
@@ -104,7 +98,6 @@ data "aws_ami" "latest-image" {
 }
 
 resource "aws_instance" "bastion" {
-  provider      = aws.region1
   ami           = data.aws_ami.latest-image.id
   instance_type = "t2.micro"
   subnet_id     = module.bastion_vpc.public_subnets[0]
@@ -125,7 +118,7 @@ EOF
 
 module "primary_cluster" {
   source                     = "../../"
-  vault_version              = "1.3.2+ent"
+  vault_version              = "1.5.0+ent"
   vault_cluster_size         = 3
   enable_deletion_protection = false
   subnet_second_octet        = "0"
@@ -137,11 +130,6 @@ resource "aws_vpc_peering_connection" "bastion_connectivity" {
   peer_vpc_id = module.bastion_vpc.vpc_id
   vpc_id      = module.primary_cluster.vpc_id
   auto_accept = true
-}
-
-resource "aws_vpc_peering_connection_accepter" "bastion_connectivity_dr" {
-  vpc_peering_connection_id = aws_vpc_peering_connection.bastion_connectivity_dr.id
-  auto_accept               = true
 }
 
 resource "aws_default_security_group" "primary_cluster" {
@@ -185,7 +173,6 @@ resource "aws_route" "bastion_vpc" {
 }
 
 resource "aws_route" "vpc_bastion" {
-  provider                  = aws.region1
   count                     = length(setproduct(module.bastion_vpc.public_subnets_cidr_blocks, module.primary_cluster.route_tables))
   route_table_id            = element(setproduct(module.bastion_vpc.public_subnets_cidr_blocks, module.primary_cluster.route_tables), count.index)[1]
   destination_cidr_block    = element(setproduct(module.bastion_vpc.public_subnets_cidr_blocks, module.primary_cluster.route_tables), count.index)[0]

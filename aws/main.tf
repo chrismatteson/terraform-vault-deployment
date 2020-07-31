@@ -1,5 +1,3 @@
-provider "aws" {
-}
 
 resource "random_id" "cluster_name" {
   byte_length = 4
@@ -66,7 +64,7 @@ resource "aws_kms_key" "bucketkms" {
   tags = local.tags
 }
 
-resource "aws_s3_bucket" "consul_setup" {
+resource "aws_s3_bucket" "vault_setup" {
   bucket        = "${random_id.cluster_name.hex}-consul-setup"
   acl           = "private"
   force_destroy = var.force_bucket_destroy
@@ -87,7 +85,7 @@ resource "aws_s3_bucket" "vault_backups" {
 }
 
 # Create IAM policy to allow Vault to reach S3 bucket and KMS key
-data "aws_iam_policy_document" "vault_backup_bucket" {
+data "aws_iam_policy_document" "vault_setup" {
   statement {
     effect = "Allow"
     actions = [
@@ -95,7 +93,7 @@ data "aws_iam_policy_document" "vault_backup_bucket" {
       "s3:PutObject"
     ]
     resources = [
-      "${aws_s3_bucket.consul_setup.arn}/*"
+      "${aws_s3_bucket.vault_setup.arn}/*"
     ]
   }
 
@@ -105,15 +103,15 @@ data "aws_iam_policy_document" "vault_backup_bucket" {
       "s3:ListBucket"
     ]
     resources = [
-      aws_s3_bucket.consul_setup.arn
+      aws_s3_bucket.vault_setup.arn
     ]
   }
 }
 
-resource "aws_iam_role_policy" "consul_bucket" {
-  name   = "${random_id.cluster_name.id}-consul-bucket"
+resource "aws_iam_role_policy" "vault_setup" {
+  name   = "${random_id.cluster_name.id}-vault-setup"
   role   = aws_iam_role.instance_role.id
-  policy = data.aws_iam_policy_document.consul_bucket.json
+  policy = data.aws_iam_policy_document.vault_setup.json
 }
 
 data "aws_iam_policy_document" "bucketkms" {
@@ -144,7 +142,7 @@ data "aws_iam_policy_document" "vault_backups" {
       "s3:PutObject",
       "s3:DeleteObject"
     ]
-    resources = ["${aws_s3_bucket.vault_backups[0].arn}/*"]
+    resources = ["${aws_s3_bucket.vault_backups.arn}/*"]
   }
   statement {
     effect = "Allow"
@@ -152,7 +150,7 @@ data "aws_iam_policy_document" "vault_backups" {
       "s3:ListBucketVersions",
       "s3:ListBucket"
     ]
-    resources = [aws_s3_bucket.vault_backups[0].arn]
+    resources = [aws_s3_bucket.vault_backups.arn]
   }
 }
 
@@ -248,17 +246,10 @@ data "template_cloudinit_config" "vault" {
     content_type = "text/x-shellscript"
     content = templatefile("${path.module}/install-vault.tpl",
       {
-      consul_version                = var.consul_version,
-      consul_download_url           = var.consul_download_url,
       vault_version                 = var.vault_version,
       vault_download_url            = var.vault_download_url,
-      consul_path                   = var.consul_path,
       vault_path                    = var.vault_path,
-      consul_user                   = var.consul_user,
       vault_user                    = var.vault_user,
-      ca_path                       = var.ca_path,
-      cert_file_path                = var.cert_file_path,
-      key_file_path                 = var.key_file_path,
       server                        = var.server,
       client                        = var.client,
       config_dir                    = var.config_dir,
@@ -268,18 +259,12 @@ data "template_cloudinit_config" "vault" {
       bin_dir                       = var.bin_dir,
       cluster_tag_key               = var.cluster_tag_key,
       cluster_tag_value             = "${random_id.cluster_name.hex}-${var.cluster_tag_value}",
-      datacenter                    = var.datacenter,
-      enable_gossip_encryption      = var.enable_gossip_encryption,
-      enable_rpc_encryption         = var.enable_rpc_encryption,
       environment                   = var.environment,
       recursor                      = var.recursor,
-      bucket                        = aws_s3_bucket.consul_setup.id,
+      bucket                        = aws_s3_bucket.vault_setup.id,
       bucketkms                     = aws_kms_key.bucketkms.id,
-      consul_license_arn            = var.consul_ent_license != "" ? module.lambda.arn : "",
-      enable_acls                   = var.enable_acls,
-      enable_consul_http_encryption = var.enable_consul_http_encryption,
-      consul_backup_bucket          = aws_s3_bucket.consul_backups[0].id,
       kms_key                       = aws_kms_key.vault.id
+      api_addr                  = "http://${aws_lb.vault.dns_name}:8200"
       }
     )
   }

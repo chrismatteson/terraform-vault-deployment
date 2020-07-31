@@ -14,13 +14,10 @@ readonly EC2_INSTANCE_DYNAMIC_DATA_URL="http://169.254.169.254/latest/dynamic"
 readonly MAX_RETRIES=30
 readonly SLEEP_BETWEEN_RETRIES_SEC=10
 readonly VAULT_PATH=%{ if vault_path != "" }${vault_path}%{else}"/opt/vault"%{endif}
-readonly CA_PATH=%{ if ca_path != "" }${ca_path}%{else}"$CONSUL_PATH/tls/ca/ca.pem"%{endif}
-readonly CA_PRIVATE_KEY_PATH=$CONSUL_PATH/tls/ca/ca_private_key.pem
-readonly CERT_FILE_PATH=%{ if cert_file_path != "" }${cert_file_path}%{else}"$CONSUL_PATH/tls/server.pem"%{endif}
-readonly KEY_FILE_PATH=%{ if key_file_path != "" }${key_file_path}%{else}"$CONSUL_PATH/tls/key.pem"%{endif}
 readonly VAULT_VERSION=%{ if vault_version != "" }${vault_version}%{ endif }
 readonly VAULT_DOWNLOAD_URL=%{ if vault_download_url != "" }${vault_download_url}%{ endif }
 readonly KMS_KEY=${kms_key}
+readonly API_ADDR=${api_addr}
 
 function log {
   local -r level="$1"
@@ -268,111 +265,14 @@ function split_by_lines {
   done
 }
 
-function generate_consul_config {
-  local -r server="$1"
-  local -r config_dir="$2"
-  local -r user="$3"
-  local -r cluster_tag_key="$4"
-  local -r cluster_tag_value="$5"
-  local -r datacenter="$6"
-  local -r enable_gossip_encryption="$7"
-  local -r gossip_encryption_key="$8"
-  local -r enable_acls="$9"
-  local -r config_path="$config_dir/$CONSUL_CONFIG_FILE"
-
-  shift 9
-  local -r recursors=("$@")
-
-  local instance_id=""
-  local instance_ip_address=""
-  local instance_region=""
-  local ui="false"
-
-  instance_id=$(get_instance_id)
-  instance_ip_address=$(get_instance_ip_address)
-  instance_region=$(get_instance_region)
-
-  local retry_join_json=""
-  if [[ -z "$cluster_tag_key" || -z "$cluster_tag_value" ]]; then
-    log_warn "Either the cluster tag key ($cluster_tag_key) or value ($cluster_tag_value) is empty. Will not automatically try to form a cluster based on EC2 tags."
-  else
-    retry_join_json=$(cat <<EOF
-"retry_join": ["provider=aws region=$instance_region tag_key=$cluster_tag_key tag_value=$cluster_tag_value"],
-EOF
-)
-  fi
-
-  local recursors_config=""
-  if (( $${#recursors[@]} != 0 )); then
-        recursors_config="\"recursors\" : [ "
-        for recursor in $${recursors[@]}
-        do
-            recursors_config="$${recursors_config}\"$${recursor}\", "
-        done
-        recursors_config=$(echo "$${recursors_config}"| sed 's/, $//')" ],"
-  fi
-
-  local gossip_encryption_configuration=""
-  if [[ "$enable_gossip_encryption" == "true" && ! -z "$gossip_encryption_key" ]]; then
-    log_info "Creating gossip encryption configuration"
-    gossip_encryption_configuration="\"encrypt\": \"$gossip_encryption_key\","
-  fi
-
-  local acl_configuration=""
-  if [ "$enable_acls" == "true" ]; then
-    log_info "Creating ACL configuration"
-    acl_configuration=$(cat <<EOF
-"acl": {
-  "enabled": true,
-  "default_policy": "deny",
-  "enable_token_persistence": true
-},
-EOF
-)
-  fi
-
-  local node_meta_configuration=""
-  if [ "$node_meta" != "" ]; then
-    log_info "Creating node-meta configuration"
-    node_meta_configuration=$(cat <<EOF
-"node_meta": $${node_meta},
-EOF
-)
-  fi
-
-  log_info "Creating default Consul configuration"
-  local default_config_json=$(cat <<EOF
-{
-  "advertise_addr": "$instance_ip_address",
-  "bind_addr": "$instance_ip_address",
-  $bootstrap_expect
-  "client_addr": "0.0.0.0",
-  "datacenter": "$datacenter",
-  "node_name": "$instance_id",
-  $recursors_config
-  $retry_join_json
-  "server": $server,
-  $gossip_encryption_configuration
-  $rpc_encryption_configuration
-  $autopilot_configuration
-  $acl_configuration
-  $node_meta_configuration
-  "ui": $ui
-}
-EOF
-)
-  log_info "Installing Consul config file in $config_path"
-  echo "$default_config_json" | jq '.' > "$config_path"
-  chown "$user:$user" "$config_path"
-}
-
 function generate_vault_config {
-  local -r config_dir="$1"
+  local -r vault_dir="$1"
   local -r user="$2"
   local -r kms_key="$3"
-  local -r consul_http_token="$4"
+  local -r api_addr="$4"
   local -r region=$(get_instance_region)
-  local -r config_path="$config_dir/$VAULT_CONFIG_FILE"
+  local -r config_path="$vault_dir/config/$VAULT_CONFIG_FILE"
+
 
   local instance_id=""
   local instance_ip_address=""
@@ -391,25 +291,6 @@ EOF
 )
   fi
 
-
-  local gossip_encryption_configuration=""
-  if [[ "$enable_gossip_encryption" == "true" && ! -z "$gossip_encryption_key" ]]; then
-    log_info "Creating gossip encryption configuration"
-    gossip_encryption_configuration="\"encrypt\": \"$gossip_encryption_key\","
-  fi
-
-  local acl_configuration=""
-  if [ "$enable_acls" == "true" ]; then
-    log_info "Creating ACL configuration"
-    acl_configuration=$(cat <<EOF
-"acl": {
-  "enabled": true,
-  "default_policy": "deny",
-  "enable_token_persistence": true
-},
-EOF
-)
-  fi
 
   log_info "Creating default Vault configuration"
   local default_config_json=$(cat <<EOF
@@ -418,13 +299,16 @@ listener "tcp" {
   tls_disable              = "true"
   tls_disable_client_certs = "true"
 }
-storage "consul" {
-  token           = "$${consul_http_token}"
+storage "raft" {
+  path = "$vault_dir/data"
+  retry_join = retry_join_json
 }
 seal "awskms" {
   region     = "$region"
   kms_key_id = "$kms_key"
 }
+api_addr = "$api_addr"
+cluster_addr = "http://$instance_ip_address:8200"
 ui       = true  
 EOF
 )
@@ -521,14 +405,6 @@ function main {
   fetch_binary "vault" "$VAULT_VERSION" "$VAULT_DOWNLOAD_URL"
   install_binary "vault" "$VAULT_PATH" "$VAULT_USER"
 
-  if command -v consul; then
-    log_info "Consul install complete!";
-  else
-    log_info "Could not find consul command. Aborting.";
-    exit 1;
-  fi
-
-
   assert_is_installed "systemctl"
   assert_is_installed "aws"
   assert_is_installed "curl"
@@ -537,9 +413,10 @@ function main {
   # If $systemd_stdout and/or $systemd_stderr are empty, we leave them empty so that generate_systemd_config will use systemd's defaults (journal and inherit, respectively)
 
 
-  generate_vault_config "$VAULT_PATH/config" \
+  generate_vault_config "$VAULT_PATH" \
     "$VAULT_USER" \
     "$KMS_KEY" \
+    "$API_ADDR"
 
   generate_systemd_config "vault" \
     "$SYSTEMD_CONFIG_PATH" \
